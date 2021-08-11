@@ -20,6 +20,8 @@
 	USB_EP_t* e __attribute__ ((unused)) = &pair->ep[!!(epaddr&0x80)]; \
 
 
+uint8_t usb_set_addr = 0;
+
 /**************************************************************************************************
 * Initialize up USB after reset
 */
@@ -109,7 +111,7 @@ void usb_ep_start_in(uint8_t ep, const uint8_t* data, usb_size size, bool zlp)
 	_USB_EP(ep);
 	e->DATAPTR = (unsigned) data;
 	e->AUXDATA = 0;	// for multi-packet
-	e->CNT = size | (zlp << 15);
+	e->CNT = size /* | (zlp << 15) */;
 	LACR16(&(e->STATUS), USB_EP_BUSNACK0_bm | USB_EP_TRNCOMPL0_bm);
 }
 
@@ -198,47 +200,42 @@ void usb_ep0_stall(void) {
 void usb_configure_clock()
 {
 #ifdef USB_USE_PLL
-	OSC.XOSCCTRL = OSC_FRQRANGE_12TO16_gc | OSC_XOSCSEL_XTAL_16KCLK_gc;
+	OSC.XOSCCTRL = OSC_FRQRANGE_2TO9_gc | OSC_XOSCSEL_EXTCLK_gc;
 	OSC.CTRL |= OSC_XOSCEN_bm;
 	while(!(OSC.STATUS & OSC_XOSCRDY_bm));
 
-	OSC.PLLCTRL = OSC_PLLSRC_XOSC_gc | 3;		// 48MHz for USB
+	OSC.PLLCTRL = OSC_PLLSRC_XOSC_gc | 6;		// 48MHz for USB
 	OSC.CTRL |= OSC_PLLEN_bm;
 	while(!(OSC.STATUS & OSC_PLLRDY_bm));
 
 	CCPWrite(&CLK.PSCTRL, CLK_PSADIV_2_gc | CLK_PSBCDIV_1_1_gc);	// 24MHz CPU clock
 	CCPWrite(&CLK.CTRL, CLK_SCLKSEL_PLL_gc);
 
-	OSC.CTRL = OSC_XOSCEN_bm | OSC_PLLEN_bm;	// disable other clocks
+	OSC.CTRL = OSC_XOSCEN_bm | OSC_PLLEN_bm | OSC_RC32KEN_bm;	// disable other clocks
 
 	CLK.USBCTRL = CLK_USBPSDIV_1_gc | CLK_USBSRC_PLL_gc | CLK_USBSEN_bm;
 #endif
 
 #ifdef USB_USE_RC32
+	OSC.XOSCCTRL = OSC_FRQRANGE_2TO9_gc | OSC_XOSCSEL_EXTCLK_gc;
+	OSC.CTRL |= OSC_XOSCEN_bm | OSC_RC32MEN_bm;
+	while(!(OSC.STATUS & OSC_XOSCRDY_bm));
+	while(!(OSC.STATUS & OSC_RC32MRDY_bm));
+
 	// Configure DFLL for 48MHz, calibrated by USB SOF
 	OSC.DFLLCTRL = OSC_RC32MCREF_USBSOF_gc;
+	DFLLRC32M.CALA = NVM_read_production_signature_byte(offsetof(NVM_PROD_SIGNATURES_t, USBRCOSCA));
 	DFLLRC32M.CALB = NVM_read_production_signature_byte(offsetof(NVM_PROD_SIGNATURES_t, USBRCOSC));
-	DFLLRC32M.COMP1 = 0x1B; //Xmega AU manual, 4.17.19
+	DFLLRC32M.COMP1 = 0x1B;				// XMEGA AU manual 7.11.5, 4.17.19
 	DFLLRC32M.COMP2 = 0xB7;
 	DFLLRC32M.CTRL = DFLL_ENABLE_bm;
 
-	CCP = CCP_IOREG_gc; //Security Signature to modify clock
-	OSC.CTRL = OSC_RC32MEN_bm | OSC_RC2MEN_bm; // enable internal 32MHz oscillator
-
-	while(!(OSC.STATUS & OSC_RC32MRDY_bm)); // wait for oscillator ready
-
-	OSC.PLLCTRL = OSC_PLLSRC_RC2M_gc | 16; // 2MHz * 16 = 32MHz
-
-	CCP = CCP_IOREG_gc;
-	OSC.CTRL = OSC_RC32MEN_bm | OSC_PLLEN_bm | OSC_RC2MEN_bm ; // Enable PLL
-
+	OSC.PLLCTRL = OSC_PLLSRC_XOSC_gc | 4; // 8MHz * 4 = 32MHz
+	OSC.CTRL |= OSC_PLLEN_bm;
 	while(!(OSC.STATUS & OSC_PLLRDY_bm)); // wait for PLL ready
 
-	DFLLRC2M.CTRL = DFLL_ENABLE_bm;
-
-	CCP = CCP_IOREG_gc; //Security Signature to modify clock
-	CLK.CTRL = CLK_SCLKSEL_PLL_gc; // Select PLL
-	CLK.PSCTRL = 0x00; // No peripheral clock prescaler
+	CCPWrite(&CLK.PSCTRL, CLK_PSADIV_1_gc | CLK_PSBCDIV_1_1_gc);
+	CCPWrite(&CLK.CTRL, CLK_SCLKSEL_PLL_gc);
 
 	CLK.USBCTRL = CLK_USBPSDIV_1_gc | CLK_USBSRC_RC32M_gc | CLK_USBSEN_bm;
 #endif
@@ -290,23 +287,28 @@ ISR(USB_TRNCOMPL_vect)
 	}
 	else if (status & USB_EP_TRNCOMPL0_bm)
 	{
-		//usb_handle_control_setup();
-		usb_handle_control_out();
+		//usb_handle_control_out();
 		LACR16(&(usb_xmega_endpoints[0].out.STATUS), USB_EP_TRNCOMPL0_bm);
 	}
 
 	// EP0 (control) IN
-	if (usb_xmega_endpoints[0].in.STATUS & USB_EP_TRNCOMPL0_bm)
+	status = usb_xmega_endpoints[0].in.STATUS;
+	if (status & USB_EP_SETUP_bm)
 	{
+		LACR16(&usb_xmega_endpoints[0].in.STATUS, USB_EP_TRNCOMPL0_bm | USB_EP_SETUP_bm);
+	}
+	else if (status & USB_EP_TRNCOMPL0_bm)
+	{
+		//usb_handle_control_in();
+		LACR16(&usb_xmega_endpoints[0].in.STATUS, USB_EP_TRNCOMPL0_bm);
+
 		// SET_ADDRESS requests must only take effect after the response IN packet has
 		// been sent.
-		if ((usb_setup.bmRequestType & USB_REQTYPE_TYPE_MASK) == USB_REQTYPE_STANDARD)
+		if (usb_set_addr != 0)
 		{
-			if (usb_setup.bRequest == USB_REQ_SetAddress)
-					USB.ADDR = usb_setup.wValue & 0x7F;
+			USB.ADDR = usb_set_addr;
+			usb_set_addr = 0;
 		}
-		usb_handle_control_in();
-		LACR16(&usb_xmega_endpoints[0].in.STATUS, USB_EP_TRNCOMPL0_bm);
 	}
 
 	// EP1 IN

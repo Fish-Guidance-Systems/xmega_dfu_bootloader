@@ -9,6 +9,8 @@
 #include <util/delay.h>
 #include "usb.h"
 #include "dfu_config.h"
+#include "hw.h"
+#include "usb/xmega.h"
 
 typedef void (*AppPtr)(void) __attribute__ ((noreturn));
 
@@ -18,6 +20,20 @@ volatile bool reset_flag = false;
 
 int main(void)
 {
+	PORTE.OUT = SPI_nSS_PIN_bm;					// hold SS high for SPI peripheral
+	PORTE.DIR = SPI_nSS_PIN_bm | SPI_MOSI_PIN_bm | SPI_SCK_PIN_bm;
+	ENABLE_PULLUP(SPI_MISO_PINCTRL);
+
+	PORTF.OUT = FLASH_nCS_PIN_bm | LED1_PIN_bm;	// Flash RST and WP enabled
+	PORTF.DIR = FLASH_nCS_PIN_bm;
+
+	PORTJ.OUT = 0xFF;
+	PORTJ.DIR = 0xFF;
+
+	PORTK.OUT = 0;
+	PORTK.DIR = ~WD_WAKE_PIN_bm;
+	ENABLE_PULLUP(WD_WAKE_PINCTRL);
+
 	if (!CheckStartConditions())
 	{
 		// exit bootloader
@@ -29,7 +45,7 @@ int main(void)
 		application_vector();
 	}
 
-	CCPWrite(&PMIC.CTRL, PMIC_IVSEL_bm);
+	CCPWrite(&PMIC.CTRL, PMIC_IVSEL_bm);	// bootloader interrupt vectors
 
 	usb_configure_clock();
 	usb_init();

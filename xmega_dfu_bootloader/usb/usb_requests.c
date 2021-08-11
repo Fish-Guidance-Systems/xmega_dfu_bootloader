@@ -23,7 +23,7 @@ volatile uint8_t usb_configuration;
 extern uint16_t usb_handle_descriptor_request(uint8_t type, uint8_t index);
 extern void handle_msft_compatible(void);
 
-
+extern uint8_t usb_set_addr;
 /**************************************************************************************************
 * Handle standard setup requests
 */
@@ -50,6 +50,7 @@ void usb_handle_standard_setup_requests(void)
 		case USB_REQ_SetAddress:
 			// USB.ADDR must only change after the IN transaction has completed,
 			// see USB_TRNCOMPL_vect vector
+			usb_set_addr = usb_setup.wValue & 0x7F;
 			usb_ep0_in(0);
 			return usb_ep0_out();
 
